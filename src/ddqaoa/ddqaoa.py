@@ -63,11 +63,13 @@ def run_ddqaoa(
     transfer: TransferFn = interp_transfer,
     monitor: ConvergenceMonitor | None = None,
     device: str = "default.qubit",
+    callback: Callable[[int, int, float], None] | None = None,
 ) -> RunResult:
     """Grow the circuit from p0 to p_max, adding a layer whenever the energy converges.
 
     ``transfer`` and ``monitor`` are the two extension points (new parameter-transfer
-    rules / new convergence criteria).
+    rules / new convergence criteria). ``callback(step, depth, energy)`` is called
+    after every optimiser step (e.g. for live progress output).
     """
     probs_fn, cost_fn = make_qnodes(problem, device)
     monitor = monitor or ConvergenceMonitor(eps, sigma, k)
@@ -85,6 +87,8 @@ def run_ddqaoa(
         depths.append(len(gammas))
         if energy < best[0]:
             best = (energy, gammas, betas)
+        if callback:
+            callback(step, len(gammas), energy)
         gammas, betas = params
 
         if monitor.update(energy):
