@@ -9,9 +9,11 @@ import pennylane as qml
 from pennylane import numpy as pnp
 
 from .circuits import QAOAProblem, cnots_per_layer, make_qnodes
-from .convergence import ConvergenceMonitor
+from .convergence import ConvergenceMonitor, EnhancedConvergenceMonitor
 from .metrics import approximation_ratio, cumulative_cnots, success_probability
-from .transfer import interp_transfer
+from .optimizer import ControlledAdamOptimizer, OptimizerConfig
+from .resource import ResourceBudget, ResourceDecision
+from .transfer import AdaptiveTransfer, adaptive_transfer, fourier_transfer, interp_transfer
 
 TransferFn = Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]
 
@@ -29,24 +31,45 @@ class RunResult:
     energies: list[float] = field(default_factory=list)    # per optimiser step
     depths: list[int] = field(default_factory=list)        # circuit depth used at each step
     depth_switch_steps: list[int] = field(default_factory=list)
+    stopping_reason: str = ""
+    grad_norms: list[float] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
 
     def summary(self) -> dict:
         return {k: (v.tolist() if isinstance(v, np.ndarray) else v)
                 for k, v in self.__dict__.items()}
 
 
-def _finish(method, problem, probs_fn, gammas, betas, energies, depths, switches) -> RunResult:
+def _finish(
+    method: str,
+    problem: QAOAProblem,
+    probs_fn,
+    gammas,
+    betas,
+    energies: list[float],
+    depths: list[int],
+    switches: list[int],
+    stopping_reason: str = "",
+    grad_norms: list[float] | None = None,
+    metadata: dict | None = None,
+) -> RunResult:
     probs = np.asarray(probs_fn(gammas, betas))
     energy = float(probs @ problem.diag)
     return RunResult(
         method=method,
-        gammas=np.asarray(gammas), betas=np.asarray(betas),
+        gammas=np.asarray(gammas),
+        betas=np.asarray(betas),
         best_energy=energy,
         approx_ratio=approximation_ratio(energy, problem),
         success_prob=success_probability(probs, problem),
         final_depth=len(gammas),
         cumulative_cnots=cumulative_cnots(depths, cnots_per_layer(problem.ising)),
-        energies=energies, depths=depths, depth_switch_steps=switches,
+        energies=energies,
+        depths=depths,
+        depth_switch_steps=switches,
+        stopping_reason=stopping_reason,
+        grad_norms=grad_norms or [],
+        metadata=metadata or {},
     )
 
 
@@ -64,27 +87,43 @@ def run_ddqaoa(
     monitor: ConvergenceMonitor | None = None,
     device: str = "default.qubit",
     callback: Callable[[int, int, float], None] | None = None,
+    resource_budget: ResourceBudget | None = None,
+    optimizer_config: OptimizerConfig | None = None,
+    method_name: str = "ddqaoa",
 ) -> RunResult:
     """Grow the circuit from p0 to p_max, adding a layer whenever the energy converges.
 
-    ``transfer`` and ``monitor`` are the two extension points (new parameter-transfer
-    rules / new convergence criteria). ``callback(step, depth, energy)`` is called
-    after every optimiser step (e.g. for live progress output).
+    ``transfer`` and ``monitor`` are the extension points (new parameter-transfer
+    rules / new convergence criteria). ``resource_budget`` and ``optimizer_config``
+    provide resource-aware stopping and controlled optimization.
     """
     probs_fn, cost_fn = make_qnodes(problem, device)
-    monitor = monitor or ConvergenceMonitor(eps, sigma, k)
+    monitor = monitor if monitor is not None else ConvergenceMonitor(eps, sigma, k)
 
     gammas = pnp.array([init[0]] * p0, requires_grad=True)
     betas = pnp.array([init[1]] * p0, requires_grad=True)
-    opt = qml.AdamOptimizer(stepsize)
+
+    if optimizer_config is not None:
+        opt = ControlledAdamOptimizer.from_config(optimizer_config)
+        opt.set_depth(p0)
+    else:
+        opt = qml.AdamOptimizer(stepsize)
+
     best = (np.inf, gammas, betas)  # best parameters at the *current* depth
     energies, depths, switches = [], [], []
+    grad_norms: list[float] = []
+    prev_depth_best_ratio: float | None = None
+    stopping_reason = f"Max steps ({max_steps}) reached"
 
     for step in range(max_steps):
         params, energy = opt.step_and_cost(cost_fn, gammas, betas)
         energy = float(energy)  # energy of (gammas, betas), i.e. before this step
         energies.append(energy)
         depths.append(len(gammas))
+
+        if isinstance(opt, ControlledAdamOptimizer):
+            grad_norms.append(opt.last_grad_norm)
+
         if energy < best[0]:
             best = (energy, gammas, betas)
         if callback:
@@ -92,12 +131,42 @@ def run_ddqaoa(
         gammas, betas = params
 
         if monitor.update(energy):
+            curr_r = approximation_ratio(best[0], problem)
+
+            # Evaluate resource-aware stopping if budget configured
+            if resource_budget is not None:
+                current_cnots = cumulative_cnots(depths, cnots_per_layer(problem.ising))
+                best_probs = np.asarray(probs_fn(best[1], best[2]))
+                curr_ps = success_probability(best_probs, problem)
+
+                decision = resource_budget.evaluate_transition(
+                    current_depth=len(gammas),
+                    approx_ratio_current=curr_r,
+                    approx_ratio_prev=prev_depth_best_ratio,
+                    success_prob_current=curr_ps,
+                    cumulative_cnots_used=current_cnots,
+                    cnots_per_layer=cnots_per_layer(problem.ising),
+                )
+                if decision.stop:
+                    stopping_reason = decision.reason
+                    break
+
+            prev_depth_best_ratio = curr_r
+
             if len(gammas) >= p_max:
+                stopping_reason = f"Reached p_max={p_max}"
                 break
+
             g_new, b_new = transfer(np.asarray(best[1]), np.asarray(best[2]))
             gammas = pnp.array(g_new, requires_grad=True)
             betas = pnp.array(b_new, requires_grad=True)
-            opt = qml.AdamOptimizer(stepsize)  # re-initialise Adam moments
+
+            if optimizer_config is not None:
+                opt = ControlledAdamOptimizer.from_config(optimizer_config)
+                opt.set_depth(len(gammas))
+            else:
+                opt = qml.AdamOptimizer(stepsize)  # re-initialise Adam moments
+
             monitor.reset()
             best = (np.inf, gammas, betas)
             switches.append(step + 1)
@@ -105,7 +174,93 @@ def run_ddqaoa(
     # Final evaluation at the deepest circuit reached (Alg. 1, line 20).
     if float(cost_fn(gammas, betas)) > best[0]:
         gammas, betas = best[1], best[2]
-    return _finish("ddqaoa", problem, probs_fn, gammas, betas, energies, depths, switches)
+
+    return _finish(
+        method_name,
+        problem,
+        probs_fn,
+        gammas,
+        betas,
+        energies,
+        depths,
+        switches,
+        stopping_reason=stopping_reason,
+        grad_norms=grad_norms,
+    )
+
+
+def run_enhanced_ddqaoa(
+    problem: QAOAProblem,
+    p0: int = 1,
+    p_max: int = 10,
+    max_steps: int = 2000,
+    stepsize: float = 0.01,
+    eps_abs: float = 1e-4,
+    eps_rel: float = 1e-4,
+    sigma_rel: float = 1e-6,
+    k: int = 40,
+    min_steps_per_depth: int = 20,
+    slope_tol: float = 1e-5,
+    transfer_strategy: str = "adaptive",
+    max_cnots: int | None = None,
+    min_marginal_gain: float = 1e-3,
+    patience_layers: int = 1,
+    target_approx_ratio: float | None = None,
+    grad_clip: float | None = 1.0,
+    depth_decay: float = 0.1,
+    init: tuple[float, float] = (0.1, 0.1),
+    device: str = "default.qubit",
+    callback: Callable[[int, int, float], None] | None = None,
+    method_name: str = "ddqaoa_enhanced",
+) -> RunResult:
+    """Enhanced DDQAOA combining all four algorithmic improvements:
+
+    1. EnhancedConvergenceMonitor: scale-invariant dual thresholds, min-step guard, slope test.
+    2. Adaptive parameter transfer: adiabatic PCHIP interpolation avoiding overshoot artifacts.
+    3. Resource-aware stopping: checks marginal ratio improvement vs CNOT gate consumption.
+    4. Controlled Adam optimizer: gradient norm clipping, depth-adaptive learning rate, NaN recovery.
+    """
+    monitor = EnhancedConvergenceMonitor(
+        eps_abs=eps_abs,
+        eps_rel=eps_rel,
+        sigma_rel=sigma_rel,
+        k=k,
+        min_steps=min_steps_per_depth,
+        slope_tol=slope_tol,
+    )
+
+    transfer = AdaptiveTransfer(strategy=transfer_strategy)
+
+    budget = ResourceBudget(
+        max_cnots=max_cnots,
+        min_marginal_gain=min_marginal_gain,
+        patience_layers=patience_layers,
+        target_approx_ratio=target_approx_ratio,
+        min_depth=2,
+    )
+
+    opt_config = OptimizerConfig(
+        stepsize=stepsize,
+        grad_clip=grad_clip,
+        depth_decay=depth_decay,
+        recover_nan=True,
+    )
+
+    return run_ddqaoa(
+        problem=problem,
+        p0=p0,
+        p_max=p_max,
+        max_steps=max_steps,
+        stepsize=stepsize,
+        init=init,
+        transfer=transfer,
+        monitor=monitor,
+        device=device,
+        callback=callback,
+        resource_budget=budget,
+        optimizer_config=opt_config,
+        method_name=method_name,
+    )
 
 
 def run_fixed_qaoa(
@@ -116,6 +271,7 @@ def run_fixed_qaoa(
     init: str = "random",
     seed: int | None = None,
     device: str = "default.qubit",
+    optimizer_config: OptimizerConfig | None = None,
 ) -> RunResult:
     """Standard QAOA at fixed depth p, optimised with Adam for a fixed number of steps.
 
@@ -130,9 +286,31 @@ def run_fixed_qaoa(
         g0, b0 = rng.random(p), rng.random(p)
     gammas = pnp.array(g0, requires_grad=True)
     betas = pnp.array(b0, requires_grad=True)
-    opt = qml.AdamOptimizer(stepsize)
+
+    if optimizer_config is not None:
+        opt = ControlledAdamOptimizer.from_config(optimizer_config)
+        opt.set_depth(p)
+    else:
+        opt = qml.AdamOptimizer(stepsize)
+
     energies = []
+    grad_norms: list[float] = []
+
     for _ in range(steps):
         (gammas, betas), energy = opt.step_and_cost(cost_fn, gammas, betas)
         energies.append(float(energy))
-    return _finish(f"p={p}", problem, probs_fn, gammas, betas, energies, [p] * steps, [])
+        if isinstance(opt, ControlledAdamOptimizer):
+            grad_norms.append(opt.last_grad_norm)
+
+    return _finish(
+        f"p={p}",
+        problem,
+        probs_fn,
+        gammas,
+        betas,
+        energies,
+        [p] * steps,
+        [],
+        grad_norms=grad_norms,
+    )
+
