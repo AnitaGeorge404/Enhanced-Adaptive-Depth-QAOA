@@ -23,6 +23,21 @@ from .transfer import (
 )
 
 
+from .noise import (
+    NoiseConfig,
+    NoiseEvaluationResult,
+    evaluate_under_noise,
+    make_noisy_qnodes,
+)
+from .scaling import (
+    evaluate_bitstring_energy,
+    evaluate_bitstrings_batch,
+    find_sparse_ground_state,
+    solve_classical_heuristic,
+    stream_ising_diagonal,
+)
+
+
 def build_problem(inst: CSPPInstance, normalize: bool = True, **qubo_kwargs):
     """CSPP instance -> (QUBO, QAOAProblem)."""
     q = cspp_to_qubo(inst, **qubo_kwargs)
@@ -39,5 +54,8 @@ __all__ = [
     "ControlledAdamOptimizer", "OptimizerConfig",
     "RunResult", "run_ddqaoa", "run_enhanced_ddqaoa", "run_fixed_qaoa",
     "paired_bootstrap_ci", "paired_statistical_tests", "aggregate_benchmark_results",
+    "NoiseConfig", "NoiseEvaluationResult", "evaluate_under_noise", "make_noisy_qnodes",
+    "evaluate_bitstring_energy", "evaluate_bitstrings_batch",
+    "stream_ising_diagonal", "find_sparse_ground_state", "solve_classical_heuristic",
 ]
 
