@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ddqaoa import build_problem, cnots_per_layer, decode, generate_instance, make_qnodes
-from ddqaoa import run_ddqaoa, run_fixed_qaoa, solve_classical
+from ddqaoa import run_ddqaoa, run_enhanced_ddqaoa, run_fixed_qaoa, solve_classical
 from ddqaoa.circuits import index_to_bits
 from ddqaoa.cspp import simple_paths
 from ddqaoa.metrics import approximation_ratio
@@ -110,8 +110,21 @@ def main() -> None:
                   f"({depth * n_cnot} CNOTs)   quality r = {approximation_ratio(energy, problem):.4f}")
 
     dd = run_ddqaoa(problem, p_max=args.p_max, max_steps=args.steps, stepsize=lr, k=k, callback=progress)
-    print(f"   finished after {len(dd.energies)} steps at {dd.final_depth} layers, "
+    print(f"   baseline DDQAOA finished after {len(dd.energies)} steps at {dd.final_depth} layers, "
           f"quality r = {dd.approx_ratio:.4f}")
+
+    print("\n   Running Enhanced DDQAOA (Improvements 1-4)...")
+    dd_enh = run_enhanced_ddqaoa(
+        problem,
+        p_max=args.p_max,
+        max_steps=args.steps,
+        stepsize=lr,
+        k=k,
+        min_steps_per_depth=15,
+        min_marginal_gain=5e-4,
+    )
+    print(f"   Enhanced DDQAOA finished after {len(dd_enh.energies)} steps at {dd_enh.final_depth} layers, "
+          f"quality r = {dd_enh.approx_ratio:.4f} (stopped: {dd_enh.stopping_reason})")
 
     # ------------------------------------------------------------------ 5
     header(5, f"Normal QAOA - fixed number of layers {args.compare}, chosen in advance", args.pause)
@@ -124,7 +137,7 @@ def main() -> None:
     # ------------------------------------------------------------------ 6
     header(6, "What does the DDQAOA circuit actually measure?", args.pause)
     probs_fn, _ = make_qnodes(problem)
-    probs = np.asarray(probs_fn(dd.gammas, dd.betas))
+    probs = np.asarray(probs_fn(dd_enh.gammas, dd_enh.betas))
     print(f"   {'chance':>7s}   {'bitstring':{problem.n_qubits + 3}s} route")
     for idx in np.argsort(probs)[::-1][:6]:
         b = index_to_bits(int(idx), problem.n_qubits)
@@ -133,25 +146,26 @@ def main() -> None:
         star = "  <-- optimal" if idx in problem.ground_states else ""
         print(f"   {probs[idx]:7.2%}   {bs[:n_roads]}|{bs[n_roads:]}   {route}{star}")
     print(f"\nRandom guessing would find the optimum with chance 1/{2 ** problem.n_qubits}"
-          f" = {1 / 2 ** problem.n_qubits:.2%}; DDQAOA: {dd.success_prob:.2%}")
+          f" = {1 / 2 ** problem.n_qubits:.2%}; Enhanced DDQAOA: {dd_enh.success_prob:.2%}")
     print("The other top results are 'near misses' (low energy, but break a rule). QAOA optimises the\n"
-          "AVERAGE energy, not the chance of the exact answer - the paper sees the same effect, and\n"
-          "it is what our CVaR extension tries to fix.")
+          "AVERAGE energy, not the chance of the exact answer.")
 
     # ------------------------------------------------------------------ 7
     header(7, "Comparison", args.pause)
-    print(f"   {'method':8s} {'quality r':>10s} {'P(optimal)':>11s} {'layers':>7s} {'total CNOTs used':>17s}")
-    for res in [dd] + fixed:
-        print(f"   {res.method:8s} {res.approx_ratio:10.4f} {res.success_prob:11.2%} "
+    print(f"   {'method':18s} {'quality r':>10s} {'P(optimal)':>11s} {'layers':>7s} {'total CNOTs used':>17s}")
+    for res in [dd, dd_enh] + fixed:
+        print(f"   {res.method:18s} {res.approx_ratio:10.4f} {res.success_prob:11.2%} "
               f"{res.final_depth:7d} {res.cumulative_cnots:17,d}")
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
-    for res in [dd] + fixed:
+    for res in [dd, dd_enh] + fixed:
         r = [approximation_ratio(e, problem) for e in res.energies]
-        ax1.plot(r, label=res.method, lw=2 if res is dd else 1.2)
-        ax2.plot(np.array(res.depths) * n_cnot, label=res.method, lw=2 if res is dd else 1.2)
+        ax1.plot(r, label=res.method, lw=2 if "enhanced" in res.method else (1.5 if res is dd else 1.0))
+        ax2.plot(np.array(res.depths) * n_cnot, label=res.method, lw=2 if "enhanced" in res.method else (1.5 if res is dd else 1.0))
     for x in dd.depth_switch_steps:
-        ax1.axvline(x, ls=":", color="gray", lw=0.8)
+        ax1.axvline(x, ls=":", color="gray", lw=0.8, alpha=0.5)
+    for x in dd_enh.depth_switch_steps:
+        ax1.axvline(x, ls="--", color="blue", lw=0.8, alpha=0.6)
     ax1.set(title="Answer quality while training", xlabel="optimiser step", ylabel="approximation ratio r")
     ax2.set(title="Circuit size (CNOT gates) while training", xlabel="optimiser step", ylabel="CNOTs per circuit")
     ax1.legend()
