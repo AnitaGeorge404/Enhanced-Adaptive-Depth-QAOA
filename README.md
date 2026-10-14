@@ -81,6 +81,8 @@ CSPPInstance ──► QUBO (Eqs. 12–16) ──► Ising (Eq. 17) ──► QA
 | [src/ddqaoa/statistics.py](src/ddqaoa/statistics.py) | Paired t-tests, Wilcoxon tests, bootstrap CIs, summary aggregation (Improvement 5) |
 | [src/ddqaoa/ddqaoa.py](src/ddqaoa/ddqaoa.py) | Baseline `run_ddqaoa`, `run_enhanced_ddqaoa`, and `run_fixed_qaoa` |
 | [src/ddqaoa/metrics.py](src/ddqaoa/metrics.py) | Approximation ratio, success probability, cumulative CNOTs |
+| [src/ddqaoa/noise.py](src/ddqaoa/noise.py) | NISQ noise modeling (depolarizing channels, 2-qubit errors, shots $S=1024$, retention metrics) |
+| [src/ddqaoa/scaling.py](src/ddqaoa/scaling.py) | Large graph scaling ($n \ge 15$ nodes / 20+ qubits): chunked streaming, matrix-free eval, heuristic solver |
 | [experiments/run_benchmark.py](experiments/run_benchmark.py) | Paired benchmarking with ablations and statistical output |
 | [experiments/plot_results.py](experiments/plot_results.py) | Pareto curves, boxplots, trajectories, ablation charts, markdown reports |
 | [docs/RESEARCH_IMPROVEMENTS.md](docs/RESEARCH_IMPROVEMENTS.md) | Full theoretical and empirical research documentation |
