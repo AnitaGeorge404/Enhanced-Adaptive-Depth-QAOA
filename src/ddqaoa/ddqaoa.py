@@ -11,7 +11,14 @@ from pennylane import numpy as pnp
 from .circuits import QAOAProblem, cnots_per_layer, make_qnodes
 from .convergence import ConvergenceMonitor, CurvatureTrigger, EnhancedConvergenceMonitor
 from .cost import CostLedger, GradientMethod
-from .metrics import approximation_ratio, cumulative_cnots, success_probability
+from .metrics import (
+    approximation_ratio,
+    build_feasible_mask,
+    cumulative_cnots,
+    postselected_energy,
+    success_probability,
+    time_to_solution_99,
+)
 from .optimizer import ControlledAdamOptimizer, OptimizerConfig
 from .resource import ResourceBudget, ResourceDecision
 from .transfer import AdaptiveTransfer, adaptive_transfer, fourier_transfer, interp_transfer
@@ -58,19 +65,32 @@ def _finish(
     grad_norms: list[float] | None = None,
     metadata: dict | None = None,
     ledger: CostLedger | None = None,
+    feasible_mask: np.ndarray | None = None,
 ) -> RunResult:
     probs = np.asarray(probs_fn(gammas, betas))
     energy = float(probs @ problem.diag)
+    succ_p = success_probability(probs, problem)
     meta = dict(metadata or {})
     if ledger is not None:
         meta["ledger"] = ledger.summary()
+
+    if feasible_mask is not None:
+        p_feas = float(np.sum(probs[feasible_mask]))
+        e_ps, y = postselected_energy(probs, problem.diag, feasible_mask)
+        r_ps = approximation_ratio(e_ps, problem)
+        meta["p_feasible"] = p_feas
+        meta["postselected_energy"] = e_ps
+        meta["postselected_ratio"] = r_ps
+
+    meta["tts_99"] = time_to_solution_99(succ_p)
+
     return RunResult(
         method=method,
         gammas=np.asarray(gammas),
         betas=np.asarray(betas),
         best_energy=energy,
         approx_ratio=approximation_ratio(energy, problem),
-        success_prob=success_probability(probs, problem),
+        success_prob=succ_p,
         final_depth=len(gammas),
         cumulative_cnots=cumulative_cnots(depths, cnots_per_layer(problem.ising)),
         energies=energies,
@@ -103,6 +123,9 @@ def run_ddqaoa(
     ledger: CostLedger | None = None,
     gradient_method: GradientMethod = "autodiff",
     shots: int | None = None,
+    objective: str = "energy",
+    feasible_mask: np.ndarray | None = None,
+    y_min: float = 1e-4,
 ) -> RunResult:
     """Grow the circuit from p0 to p_max, adding a layer whenever the energy converges.
 
@@ -110,7 +133,13 @@ def run_ddqaoa(
     rules / new convergence criteria). ``resource_budget`` and ``optimizer_config``
     provide resource-aware stopping and controlled optimization.
     """
-    probs_fn, cost_fn = make_qnodes(problem, device)
+    probs_fn, cost_fn = make_qnodes(
+        problem,
+        device,
+        feasible_mask=feasible_mask,
+        objective=objective,
+        y_min=y_min,
+    )
     monitor = monitor if monitor is not None else ConvergenceMonitor(eps, sigma, k)
 
     if ledger is None:
@@ -238,6 +267,7 @@ def run_ddqaoa(
         stopping_reason=stopping_reason,
         grad_norms=grad_norms,
         ledger=ledger,
+        feasible_mask=feasible_mask,
     )
 
 
@@ -267,6 +297,9 @@ def run_enhanced_ddqaoa(
     ledger: CostLedger | None = None,
     gradient_method: GradientMethod = "autodiff",
     shots: int | None = None,
+    objective: str = "energy",
+    feasible_mask: np.ndarray | None = None,
+    y_min: float = 1e-4,
 ) -> RunResult:
     """Enhanced DDQAOA combining all four algorithmic improvements:
 
@@ -318,6 +351,9 @@ def run_enhanced_ddqaoa(
         ledger=ledger,
         gradient_method=gradient_method,
         shots=shots,
+        objective=objective,
+        feasible_mask=feasible_mask,
+        y_min=y_min,
     )
 
 
@@ -333,12 +369,21 @@ def run_fixed_qaoa(
     ledger: CostLedger | None = None,
     gradient_method: GradientMethod = "autodiff",
     shots: int | None = None,
+    objective: str = "energy",
+    feasible_mask: np.ndarray | None = None,
+    y_min: float = 1e-4,
 ) -> RunResult:
     """Standard QAOA at fixed depth p, optimised with Adam for a fixed number of steps.
 
     init: "random" (U[0, 1)) or "ramp" (linear-ramp / annealing-like schedule).
     """
-    probs_fn, cost_fn = make_qnodes(problem, device)
+    probs_fn, cost_fn = make_qnodes(
+        problem,
+        device,
+        feasible_mask=feasible_mask,
+        objective=objective,
+        y_min=y_min,
+    )
     if init == "ramp":
         frac = (np.arange(p) + 0.5) / p
         g0, b0 = 0.8 * frac, 0.8 * (1 - frac)
@@ -387,5 +432,6 @@ def run_fixed_qaoa(
         [],
         grad_norms=grad_norms,
         ledger=ledger,
+        feasible_mask=feasible_mask,
     )
 
