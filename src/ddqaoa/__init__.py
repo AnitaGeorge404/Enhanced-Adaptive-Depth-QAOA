@@ -10,6 +10,7 @@ from .cspp import CSPPInstance, generate_instance, solve_classical
 from .ddqaoa import RunResult, run_ddqaoa, run_enhanced_ddqaoa, run_fixed_qaoa
 from .optimizer import ControlledAdamOptimizer, OptimizerConfig
 from .qubo import cspp_to_qubo, decode, qubo_to_ising
+from .reduction import ReductionResult, reduce_instance
 from .resource import ResourceBudget, ResourceDecision
 from .statistics import (
     aggregate_benchmark_results,
@@ -33,6 +34,7 @@ def build_problem(inst: CSPPInstance, normalize: bool = True, **qubo_kwargs):
 __all__ = [
     "CSPPInstance", "generate_instance", "solve_classical",
     "cspp_to_qubo", "qubo_to_ising", "decode", "build_problem",
+    "reduce_instance", "ReductionResult",
     "QAOAProblem", "make_qnodes", "cnots_per_layer",
     "CostLedger", "estimate_hessian_cost",
     "ConvergenceMonitor", "EnhancedConvergenceMonitor",
