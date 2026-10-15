@@ -88,8 +88,19 @@ def qaoa_layer(gamma, beta, ising: Ising) -> None:
         qml.RX(2 * beta, wires=i)
 
 
-def make_qnodes(problem: QAOAProblem, device: str = "default.qubit", device_kwargs=None):
-    """Return (probs_fn, cost_fn); both take (gammas, betas) of any length p."""
+def make_qnodes(
+    problem: QAOAProblem,
+    device: str = "default.qubit",
+    device_kwargs=None,
+    feasible_mask: np.ndarray | None = None,
+    objective: str = "energy",
+    y_min: float = 1e-4,
+):
+    """Return (probs_fn, cost_fn); both take (gammas, betas) of any length p.
+
+    objective: "energy" for standard expectation <H_C>, or "postselected" for
+        E_ps = sum_{x in F} P(x) E(x) / sum_{x in F} P(x) with y_min fallback.
+    """
     n = problem.n_qubits
     dev = qml.device(device, wires=n, **(device_kwargs or {}))
 
@@ -103,7 +114,19 @@ def make_qnodes(problem: QAOAProblem, device: str = "default.qubit", device_kwar
 
     diag = problem.diag
 
-    def cost_fn(gammas, betas):
-        return qml.math.dot(probs_fn(gammas, betas), diag)
+    if objective == "postselected" and feasible_mask is not None:
+        f_mask = np.asarray(feasible_mask, dtype=float)
+        def cost_fn(gammas, betas):
+            probs = probs_fn(gammas, betas)
+            p_feas = probs * f_mask
+            y = qml.math.sum(p_feas)
+            return qml.math.where(
+                y < y_min,
+                qml.math.dot(probs, diag),
+                qml.math.dot(p_feas, diag) / (y + 1e-15),
+            )
+    else:
+        def cost_fn(gammas, betas):
+            return qml.math.dot(probs_fn(gammas, betas), diag)
 
     return probs_fn, cost_fn

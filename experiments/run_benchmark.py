@@ -17,22 +17,33 @@ import datetime
 import json
 import time
 import traceback
+import sys
 from pathlib import Path
+
+# Add src to sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from ddqaoa import (
     AdaptiveTransfer,
     ConvergenceMonitor,
+    CurvatureTrigger,
     EnhancedConvergenceMonitor,
+    FidelityModel,
+    NoiseAwareStopper,
     OptimizerConfig,
     ResourceBudget,
     aggregate_benchmark_results,
+    build_feasible_mask,
     build_problem,
     generate_instance,
     interp_transfer,
+    reduce_instance,
     run_ddqaoa,
     run_enhanced_ddqaoa,
     run_fixed_qaoa,
+    run_noise_aware_ddqaoa,
     solve_classical,
+    zero_pad_displace,
 )
 
 
@@ -51,6 +62,18 @@ def main() -> None:
     ap.add_argument("--ablations", action="store_true", help="run individual ablation configurations")
     ap.add_argument("--smoke", action="store_true", help="run ultra-fast smoke test")
     ap.add_argument("--out", type=Path, default=Path("results/benchmark.json"))
+
+    # Research flags (Features 1-4)
+    ap.add_argument("--reduce", action="store_true", help="enable optimality-preserving instance reduction (R0-R4)")
+    ap.add_argument("--trigger", choices=["patience", "enhanced", "curvature"], default="enhanced", help="depth growth trigger")
+    ap.add_argument("--transfer", choices=["interp", "adaptive", "fourier", "zero_pad_displace"], default="adaptive", help="parameter transfer strategy")
+    ap.add_argument("--noise-aware", action="store_true", help="run noise-aware stopping and crossover analysis")
+    ap.add_argument("--noise-eps2", type=float, default=0.005, help="two-qubit gate depolarizing error rate")
+    ap.add_argument("--noise-rule", choices=["reactive", "predictive"], default="reactive", help="noise stopping rule")
+    ap.add_argument("--noise-backend", choices=["auto", "surrogate", "mixed"], default="auto", help="backend for noisy evaluation")
+    ap.add_argument("--objective", choices=["energy", "postselected"], default="energy", help="training objective")
+    ap.add_argument("--gradient-method", choices=["autodiff", "parameter_shift", "spsa"], default="autodiff", help="gradient estimation method")
+    ap.add_argument("--shots-per-batch", type=int, default=None, help="shots per circuit execution (None for exact statevector)")
     args = ap.parse_args()
 
     if args.smoke:
@@ -88,7 +111,8 @@ def main() -> None:
             ),
         ))
 
-        # 2. Enhanced DDQAOA (all 4 improvements combined)
+        # 2. Enhanced DDQAOA
+        feasible_mask = build_feasible_mask(problem, inst)
         runs.append((
             "ddqaoa_enhanced",
             lambda: run_enhanced_ddqaoa(
@@ -102,8 +126,96 @@ def main() -> None:
                 patience_layers=1,
                 grad_clip=1.0,
                 depth_decay=0.1,
+                gradient_method=args.gradient_method,
+                shots=args.shots_per_batch,
+                objective=args.objective,
+                feasible_mask=feasible_mask,
             ),
         ))
+
+        # 3. Research Features (if flags enabled or requested)
+        if args.reduce:
+            red_res = reduce_instance(inst)
+            _, problem_reduced = build_problem(
+                red_res.reduced_instance,
+                n_slack=args.n_slack,
+                fixed_edges=red_res.fixed_edges,
+            )
+            feasible_mask_red = build_feasible_mask(problem_reduced, red_res.reduced_instance)
+            runs.append((
+                "ddqaoa_reduced",
+                lambda: run_enhanced_ddqaoa(
+                    problem_reduced,
+                    p_max=args.p_max,
+                    max_steps=args.steps,
+                    stepsize=args.stepsize,
+                    k=args.k,
+                    min_steps_per_depth=max(10, args.k // 2),
+                    min_marginal_gain=5e-4,
+                    patience_layers=1,
+                    grad_clip=1.0,
+                    depth_decay=0.1,
+                    gradient_method=args.gradient_method,
+                    shots=args.shots_per_batch,
+                    objective=args.objective,
+                    feasible_mask=feasible_mask_red,
+                    method_name="ddqaoa_reduced",
+                ),
+            ))
+
+        if args.trigger == "curvature" or args.transfer == "zero_pad_displace":
+            transfer_fn = zero_pad_displace if args.transfer == "zero_pad_displace" else AdaptiveTransfer(strategy=args.transfer)
+            runs.append((
+                "ddqaoa_curvature",
+                lambda: run_ddqaoa(
+                    problem,
+                    p_max=args.p_max,
+                    max_steps=args.steps,
+                    stepsize=args.stepsize,
+                    k=args.k,
+                    monitor=CurvatureTrigger(min_steps=max(5, args.k // 2), max_steps_per_depth=max(10, args.steps // 2)),
+                    transfer=transfer_fn,
+                    optimizer_config=OptimizerConfig(stepsize=args.stepsize, grad_clip=1.0, depth_decay=0.1),
+                    resource_budget=ResourceBudget(min_marginal_gain=5e-4, patience_layers=1, min_depth=2),
+                    gradient_method=args.gradient_method,
+                    shots=args.shots_per_batch,
+                    objective=args.objective,
+                    feasible_mask=feasible_mask,
+                    method_name="ddqaoa_curvature",
+                ),
+            ))
+
+        if args.noise_aware:
+            runs.append((
+                "ddqaoa_noise_aware",
+                lambda: run_noise_aware_ddqaoa(
+                    problem,
+                    eps2=args.noise_eps2,
+                    rule=args.noise_rule,
+                    p_max=args.p_max,
+                    max_steps=args.steps,
+                    stepsize=args.stepsize,
+                    k=args.k,
+                    noisy_backend=args.noise_backend,
+                ),
+            ))
+
+        if args.objective == "postselected" and not any(r[0] == "ddqaoa_postselected" for r in runs):
+            runs.append((
+                "ddqaoa_postselected",
+                lambda: run_enhanced_ddqaoa(
+                    problem,
+                    p_max=args.p_max,
+                    max_steps=args.steps,
+                    stepsize=args.stepsize,
+                    k=args.k,
+                    objective="postselected",
+                    feasible_mask=feasible_mask,
+                    gradient_method=args.gradient_method,
+                    shots=args.shots_per_batch,
+                    method_name="ddqaoa_postselected",
+                ),
+            ))
 
         # 3. Ablations
         if args.ablations:
