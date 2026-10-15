@@ -122,6 +122,47 @@ def adaptive_transfer(
     return np.asarray(g_interp, dtype=float), np.asarray(b_interp, dtype=float)
 
 
+def zero_pad_displace(
+    gammas,
+    betas,
+    delta: float = 0.1,
+    position: int = -1,
+    v_min: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Insert an identity layer (gamma=0, beta=0) and displace along descent eigenvector v_min.
+
+    theta_0 = theta_TS + delta * v_min.
+    Displacement is required because Adam optimizer does not move from a point with zero gradient.
+    """
+    g = list(np.asarray(gammas, dtype=float))
+    b = list(np.asarray(betas, dtype=float))
+    p = len(g)
+
+    if position == -1 or position >= p:
+        insert_idx = p
+    elif position < 0:
+        insert_idx = max(0, p + 1 + position)
+    else:
+        insert_idx = min(p, position)
+
+    if v_min is not None:
+        v = np.asarray(v_min, dtype=float).flatten()
+        if len(v) >= 2:
+            dg, db = float(delta * v[0]), float(delta * v[1])
+        else:
+            dg, db = float(delta), float(delta)
+    else:
+        dg = float(delta / np.sqrt(2))
+        db = float(-delta / np.sqrt(2))
+
+    g.insert(insert_idx, dg)
+    b.insert(insert_idx, db)
+
+    g_new = np.clip(np.asarray(g, dtype=float), -np.pi, np.pi)
+    b_new = np.clip(np.asarray(b, dtype=float), -np.pi / 2, np.pi / 2)
+    return g_new, b_new
+
+
 class AdaptiveTransfer:
     """Configurable parameter transfer dispatcher supporting multiple strategies."""
 
@@ -136,10 +177,13 @@ class AdaptiveTransfer:
             return fourier_transfer(gammas, betas, **self.kwargs)
         elif self.strategy == "interp":
             return interp_transfer(gammas, betas, **self.kwargs)
+        elif self.strategy == "zero_pad_displace":
+            return zero_pad_displace(gammas, betas, **self.kwargs)
         elif self.strategy == "ramp":
             p = len(gammas) + 1
             frac = (np.arange(p) + 0.5) / p
             return 0.8 * frac, 0.8 * (1.0 - frac)
         else:
             raise ValueError(f"Unknown transfer strategy: {self.strategy}")
+
 

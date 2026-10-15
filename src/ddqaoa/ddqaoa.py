@@ -9,7 +9,7 @@ import pennylane as qml
 from pennylane import numpy as pnp
 
 from .circuits import QAOAProblem, cnots_per_layer, make_qnodes
-from .convergence import ConvergenceMonitor, EnhancedConvergenceMonitor
+from .convergence import ConvergenceMonitor, CurvatureTrigger, EnhancedConvergenceMonitor
 from .cost import CostLedger, GradientMethod
 from .metrics import approximation_ratio, cumulative_cnots, success_probability
 from .optimizer import ControlledAdamOptimizer, OptimizerConfig
@@ -155,7 +155,29 @@ def run_ddqaoa(
             callback(step, len(gammas), energy)
         gammas, betas = params
 
-        if monitor.update(energy):
+        # Check transition condition
+        if isinstance(monitor, CurvatureTrigger):
+            curv_decision = monitor.check_step(
+                step=step,
+                energy=energy,
+                grad_norm=g_norm,
+                gammas=np.asarray(best[1]),
+                betas=np.asarray(best[2]),
+                problem=problem,
+                cost_fn=cost_fn,
+                ledger=ledger,
+            )
+            if curv_decision.should_stop:
+                stopping_reason = curv_decision.reason
+                break
+            should_grow = curv_decision.should_grow
+            displaced_g = curv_decision.displaced_gammas
+            displaced_b = curv_decision.displaced_betas
+        else:
+            should_grow = monitor.update(energy)
+            displaced_g, displaced_b = None, None
+
+        if should_grow:
             curr_r = approximation_ratio(best[0], problem)
 
             # Evaluate resource-aware stopping if budget configured
@@ -182,7 +204,11 @@ def run_ddqaoa(
                 stopping_reason = f"Reached p_max={p_max}"
                 break
 
-            g_new, b_new = transfer(np.asarray(best[1]), np.asarray(best[2]))
+            if displaced_g is not None and displaced_b is not None:
+                g_new, b_new = displaced_g, displaced_b
+            else:
+                g_new, b_new = transfer(np.asarray(best[1]), np.asarray(best[2]))
+
             gammas = pnp.array(g_new, requires_grad=True)
             betas = pnp.array(b_new, requires_grad=True)
 

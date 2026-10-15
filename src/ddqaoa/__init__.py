@@ -4,7 +4,7 @@ Reproduction of Saini et al., "Dynamic depth quantum approximate optimization
 algorithm for solving constrained shortest path problem", Quantum Mach. Intell. 8:104 (2026).
 """
 from .circuits import QAOAProblem, cnots_per_layer, make_qnodes
-from .convergence import ConvergenceMonitor, EnhancedConvergenceMonitor
+from .convergence import ConvergenceMonitor, CurvatureDecision, CurvatureTrigger, EnhancedConvergenceMonitor
 from .cost import CostLedger, estimate_hessian_cost
 from .cspp import CSPPInstance, generate_instance, solve_classical
 from .ddqaoa import RunResult, run_ddqaoa, run_enhanced_ddqaoa, run_fixed_qaoa
@@ -22,6 +22,7 @@ from .transfer import (
     adaptive_transfer,
     fourier_transfer,
     interp_transfer,
+    zero_pad_displace,
 )
 
 
@@ -38,7 +39,8 @@ __all__ = [
     "QAOAProblem", "make_qnodes", "cnots_per_layer",
     "CostLedger", "estimate_hessian_cost",
     "ConvergenceMonitor", "EnhancedConvergenceMonitor",
-    "interp_transfer", "adaptive_transfer", "fourier_transfer", "AdaptiveTransfer",
+    "CurvatureTrigger", "CurvatureDecision",
+    "interp_transfer", "adaptive_transfer", "fourier_transfer", "zero_pad_displace", "AdaptiveTransfer",
     "ResourceBudget", "ResourceDecision",
     "ControlledAdamOptimizer", "OptimizerConfig",
     "RunResult", "run_ddqaoa", "run_enhanced_ddqaoa", "run_fixed_qaoa",
