@@ -5,6 +5,7 @@ algorithm for solving constrained shortest path problem", Quantum Mach. Intell. 
 """
 from .circuits import QAOAProblem, cnots_per_layer, make_qnodes
 from .convergence import ConvergenceMonitor, EnhancedConvergenceMonitor
+from .cost import CostLedger, estimate_hessian_cost
 from .cspp import CSPPInstance, generate_instance, solve_classical
 from .ddqaoa import RunResult, run_ddqaoa, run_enhanced_ddqaoa, run_fixed_qaoa
 from .optimizer import ControlledAdamOptimizer, OptimizerConfig
@@ -33,6 +34,7 @@ __all__ = [
     "CSPPInstance", "generate_instance", "solve_classical",
     "cspp_to_qubo", "qubo_to_ising", "decode", "build_problem",
     "QAOAProblem", "make_qnodes", "cnots_per_layer",
+    "CostLedger", "estimate_hessian_cost",
     "ConvergenceMonitor", "EnhancedConvergenceMonitor",
     "interp_transfer", "adaptive_transfer", "fourier_transfer", "AdaptiveTransfer",
     "ResourceBudget", "ResourceDecision",

@@ -10,6 +10,7 @@ from pennylane import numpy as pnp
 
 from .circuits import QAOAProblem, cnots_per_layer, make_qnodes
 from .convergence import ConvergenceMonitor, EnhancedConvergenceMonitor
+from .cost import CostLedger, GradientMethod
 from .metrics import approximation_ratio, cumulative_cnots, success_probability
 from .optimizer import ControlledAdamOptimizer, OptimizerConfig
 from .resource import ResourceBudget, ResourceDecision
@@ -34,10 +35,14 @@ class RunResult:
     stopping_reason: str = ""
     grad_norms: list[float] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    ledger: CostLedger | None = None
 
     def summary(self) -> dict:
-        return {k: (v.tolist() if isinstance(v, np.ndarray) else v)
-                for k, v in self.__dict__.items()}
+        d = {k: (v.tolist() if isinstance(v, np.ndarray) else v)
+             for k, v in self.__dict__.items() if k != "ledger"}
+        if self.ledger is not None:
+            d["ledger"] = self.ledger.summary()
+        return d
 
 
 def _finish(
@@ -52,9 +57,13 @@ def _finish(
     stopping_reason: str = "",
     grad_norms: list[float] | None = None,
     metadata: dict | None = None,
+    ledger: CostLedger | None = None,
 ) -> RunResult:
     probs = np.asarray(probs_fn(gammas, betas))
     energy = float(probs @ problem.diag)
+    meta = dict(metadata or {})
+    if ledger is not None:
+        meta["ledger"] = ledger.summary()
     return RunResult(
         method=method,
         gammas=np.asarray(gammas),
@@ -69,7 +78,8 @@ def _finish(
         depth_switch_steps=switches,
         stopping_reason=stopping_reason,
         grad_norms=grad_norms or [],
-        metadata=metadata or {},
+        metadata=meta,
+        ledger=ledger,
     )
 
 
@@ -90,6 +100,9 @@ def run_ddqaoa(
     resource_budget: ResourceBudget | None = None,
     optimizer_config: OptimizerConfig | None = None,
     method_name: str = "ddqaoa",
+    ledger: CostLedger | None = None,
+    gradient_method: GradientMethod = "autodiff",
+    shots: int | None = None,
 ) -> RunResult:
     """Grow the circuit from p0 to p_max, adding a layer whenever the energy converges.
 
@@ -99,6 +112,16 @@ def run_ddqaoa(
     """
     probs_fn, cost_fn = make_qnodes(problem, device)
     monitor = monitor if monitor is not None else ConvergenceMonitor(eps, sigma, k)
+
+    if ledger is None:
+        ledger = CostLedger(
+            gradient_method=gradient_method,
+            shots=shots,
+            cnots_per_layer=cnots_per_layer(problem.ising),
+            n_qubits=problem.n_qubits,
+            n_zz=len(problem.ising.J),
+            n_z=len(problem.ising.h),
+        )
 
     gammas = pnp.array([init[0]] * p0, requires_grad=True)
     betas = pnp.array([init[1]] * p0, requires_grad=True)
@@ -121,8 +144,10 @@ def run_ddqaoa(
         energies.append(energy)
         depths.append(len(gammas))
 
-        if isinstance(opt, ControlledAdamOptimizer):
-            grad_norms.append(opt.last_grad_norm)
+        g_norm = opt.last_grad_norm if isinstance(opt, ControlledAdamOptimizer) else None
+        if g_norm is not None:
+            grad_norms.append(g_norm)
+        ledger.record_step(step=step, depth=len(gammas), energy=energy, grad_norm=g_norm)
 
         if energy < best[0]:
             best = (energy, gammas, betas)
@@ -186,6 +211,7 @@ def run_ddqaoa(
         switches,
         stopping_reason=stopping_reason,
         grad_norms=grad_norms,
+        ledger=ledger,
     )
 
 
@@ -212,6 +238,9 @@ def run_enhanced_ddqaoa(
     device: str = "default.qubit",
     callback: Callable[[int, int, float], None] | None = None,
     method_name: str = "ddqaoa_enhanced",
+    ledger: CostLedger | None = None,
+    gradient_method: GradientMethod = "autodiff",
+    shots: int | None = None,
 ) -> RunResult:
     """Enhanced DDQAOA combining all four algorithmic improvements:
 
@@ -260,6 +289,9 @@ def run_enhanced_ddqaoa(
         resource_budget=budget,
         optimizer_config=opt_config,
         method_name=method_name,
+        ledger=ledger,
+        gradient_method=gradient_method,
+        shots=shots,
     )
 
 
@@ -272,6 +304,9 @@ def run_fixed_qaoa(
     seed: int | None = None,
     device: str = "default.qubit",
     optimizer_config: OptimizerConfig | None = None,
+    ledger: CostLedger | None = None,
+    gradient_method: GradientMethod = "autodiff",
+    shots: int | None = None,
 ) -> RunResult:
     """Standard QAOA at fixed depth p, optimised with Adam for a fixed number of steps.
 
@@ -287,6 +322,16 @@ def run_fixed_qaoa(
     gammas = pnp.array(g0, requires_grad=True)
     betas = pnp.array(b0, requires_grad=True)
 
+    if ledger is None:
+        ledger = CostLedger(
+            gradient_method=gradient_method,
+            shots=shots,
+            cnots_per_layer=cnots_per_layer(problem.ising),
+            n_qubits=problem.n_qubits,
+            n_zz=len(problem.ising.J),
+            n_z=len(problem.ising.h),
+        )
+
     if optimizer_config is not None:
         opt = ControlledAdamOptimizer.from_config(optimizer_config)
         opt.set_depth(p)
@@ -296,11 +341,14 @@ def run_fixed_qaoa(
     energies = []
     grad_norms: list[float] = []
 
-    for _ in range(steps):
+    for step in range(steps):
         (gammas, betas), energy = opt.step_and_cost(cost_fn, gammas, betas)
-        energies.append(float(energy))
-        if isinstance(opt, ControlledAdamOptimizer):
-            grad_norms.append(opt.last_grad_norm)
+        energy_val = float(energy)
+        energies.append(energy_val)
+        g_norm = opt.last_grad_norm if isinstance(opt, ControlledAdamOptimizer) else None
+        if g_norm is not None:
+            grad_norms.append(g_norm)
+        ledger.record_step(step=step, depth=p, energy=energy_val, grad_norm=g_norm)
 
     return _finish(
         f"p={p}",
@@ -312,5 +360,6 @@ def run_fixed_qaoa(
         [p] * steps,
         [],
         grad_norms=grad_norms,
+        ledger=ledger,
     )
 
