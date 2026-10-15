@@ -19,6 +19,7 @@ from .metrics import (
     success_probability,
     time_to_solution_99,
 )
+from .noise_stopping import FidelityModel, NoiseAwareStopper, make_noisy_qnodes, run_noise_aware_ddqaoa
 from .ddqaoa import RunResult, run_ddqaoa, run_enhanced_ddqaoa, run_fixed_qaoa
 from .optimizer import ControlledAdamOptimizer, OptimizerConfig
 from .qubo import cspp_to_qubo, decode, qubo_to_ising
@@ -59,6 +60,7 @@ __all__ = [
     "ResourceBudget", "ResourceDecision",
     "ControlledAdamOptimizer", "OptimizerConfig",
     "RunResult", "run_ddqaoa", "run_enhanced_ddqaoa", "run_fixed_qaoa",
+    "FidelityModel", "NoiseAwareStopper", "make_noisy_qnodes", "run_noise_aware_ddqaoa",
     "paired_bootstrap_ci", "paired_statistical_tests", "aggregate_benchmark_results",
 ]
 
