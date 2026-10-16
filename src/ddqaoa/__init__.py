@@ -47,6 +47,12 @@ from .warm_start import (
 )
 
 
+from .annealing import (
+    DCPAConfig,
+    build_annealed_problem,
+    cvar_expectation,
+    run_dcpa_ddqaoa,
+)
 from .noise import (
     NoiseConfig,
     NoiseEvaluationResult,
@@ -88,6 +94,7 @@ __all__ = [
     "ResourceBudget", "ResourceDecision",
     "ControlledAdamOptimizer", "OptimizerConfig",
     "RunResult", "run_ddqaoa", "run_enhanced_ddqaoa", "run_fixed_qaoa",
+    "DCPAConfig", "build_annealed_problem", "cvar_expectation", "run_dcpa_ddqaoa",
     "FidelityModel", "NoiseAwareStopper", "make_noisy_qnodes", "run_noise_aware_ddqaoa",
     "paired_bootstrap_ci", "paired_statistical_tests", "aggregate_benchmark_results",
     "NoiseConfig", "NoiseEvaluationResult", "evaluate_under_noise", "make_noisy_qnodes",

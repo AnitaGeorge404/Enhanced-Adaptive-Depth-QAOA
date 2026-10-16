@@ -244,8 +244,8 @@ def run_e2_curvature(n_instances: int = 6, out_path: Path = Path("results/e2_cur
     cnot_ci = paired_bootstrap_ci(curv_cnots, pat_cnots)
 
     print("\nStatistical Comparison (Curvature vs Patience Heuristic):")
-    print(f"  ΔSteps: {step_ci['mean_diff']:+.1f} [95% CI: {step_ci['ci_lower']:+.1f}, {step_ci['ci_upper']:+.1f}]")
-    print(f"  ΔCNOTs: {cnot_ci['mean_diff']:+,.0f} [95% CI: {cnot_ci['ci_lower']:+,.0f}, {cnot_ci['ci_upper']:+,.0f}]")
+    print(f"  Delta Steps: {step_ci['mean_diff']:+.1f} [95% CI: {step_ci['ci_lower']:+.1f}, {step_ci['ci_upper']:+.1f}]")
+    print(f"  Delta CNOTs: {cnot_ci['mean_diff']:+,.0f} [95% CI: {cnot_ci['ci_lower']:+,.0f}, {cnot_ci['ci_upper']:+,.0f}]")
 
     payload = {
         "experiment": "E2_curvature",
