@@ -263,7 +263,7 @@ def build_report():
         p_after = doc.add_paragraph()
         p_after.paragraph_format.space_after = Pt(2)
 
-    def add_callout(text, prefix="KEY FINDING: ", color_hex=HEX_PRIMARY):
+    def add_callout(text, prefix="KEY FINDING: ", color_hex=HEX_PRIMARY, align_left=False):
         tbl = doc.add_table(rows=1, cols=1)
         tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
         tbl.autofit = False
@@ -282,7 +282,7 @@ def build_report():
         tcPr.append(tcBorders)
 
         p = cell.paragraphs[0]
-        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT if align_left else WD_ALIGN_PARAGRAPH.JUSTIFY
         p.paragraph_format.space_before = Pt(1)
         p.paragraph_format.space_after = Pt(1)
         p.paragraph_format.line_spacing = 1.12
@@ -401,6 +401,7 @@ def build_report():
     c_grp._tc.get_or_add_tcPr().append(tcB)
 
     p_g = c_grp.paragraphs[0]
+    p_g.alignment = WD_ALIGN_PARAGRAPH.LEFT
     p_g.paragraph_format.space_before = Pt(2)
     p_g.paragraph_format.space_after = Pt(2)
     r_gh = p_g.add_run("Group Name: Pentagon\n")
@@ -424,6 +425,7 @@ def build_report():
     ]
     for name, roll, role in team_members:
         p_m = c_grp.add_paragraph()
+        p_m.alignment = WD_ALIGN_PARAGRAPH.LEFT
         p_m.paragraph_format.space_before = Pt(1)
         p_m.paragraph_format.space_after = Pt(1)
         p_m.paragraph_format.line_spacing = 1.08
@@ -1232,7 +1234,7 @@ def build_report():
         "# 4. Research Features: python experiments/run_research_features.py --all\n"
         "# 5. Plotting Suite: python experiments/plot_results.py results/benchmark_research.json\n"
         "# 6. Interactive Demo: python demo.py",
-        prefix="SHELL REPRODUCIBILITY COMMANDS: ", color_hex=HEX_PRIMARY
+        prefix="SHELL REPRODUCIBILITY COMMANDS: ", color_hex=HEX_PRIMARY, align_left=True
     )
 
     add_h2("Appendix E: Sample CSPP Graph Instances and Exact Classical Solutions")
@@ -1247,11 +1249,18 @@ def build_report():
                    top_data, col_widths=[0.8, 0.6, 0.6, 0.8, 1.4, 0.6, 1.6])
 
     add_h2("Appendix F: Open-Source Repository Link and Artifact Integrity")
-    add_p(
+    p_repo = doc.add_paragraph()
+    p_repo.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p_repo.paragraph_format.line_spacing = 1.12
+    p_repo.paragraph_format.space_after = Pt(2)
+    r_rp = p_repo.add_run(
         "Repository URL: https://github.com/AnitaGeorge404/Enhanced-Adaptive-Depth-QAOA\n"
         "License: MIT Open-Source License | Release: v0.3.0 (Submission-Ready Academic Build)\n"
         "Reference DOI: Saini et al. (2026), Quantum Machine Intelligence, doi: 10.1007/s42484-026-00442-0."
     )
+    r_rp.font.name = 'Times New Roman'
+    r_rp.font.size = Pt(9.5)
+    r_rp.font.color.rgb = COLOR_DARK
 
     # Save Document
     out_docx = "IEG313_Enhanced_Adaptive_Depth_QAOA_Project_Report.docx"
