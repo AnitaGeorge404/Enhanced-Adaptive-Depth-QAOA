@@ -81,8 +81,11 @@ CSPPInstance ──► QUBO (Eqs. 12–16) ──► Ising (Eq. 17) ──► QA
 | [src/ddqaoa/statistics.py](src/ddqaoa/statistics.py) | Paired t-tests, Wilcoxon tests, bootstrap CIs, summary aggregation (Improvement 5) |
 | [src/ddqaoa/ddqaoa.py](src/ddqaoa/ddqaoa.py) | Baseline `run_ddqaoa`, `run_enhanced_ddqaoa`, and `run_fixed_qaoa` |
 | [src/ddqaoa/metrics.py](src/ddqaoa/metrics.py) | Approximation ratio, success probability, cumulative CNOTs |
-| [src/ddqaoa/noise.py](src/ddqaoa/noise.py) | NISQ noise modeling (depolarizing channels, 2-qubit errors, shots $S=1024$, retention metrics) |
+| [src/ddqaoa/noise.py](src/ddqaoa/noise.py) | NISQ noise modeling (depolarizing channels, Readout Error Mitigation - REM, shots $S=1024$) |
 | [src/ddqaoa/scaling.py](src/ddqaoa/scaling.py) | Large graph scaling ($n \ge 15$ nodes / 20+ qubits): chunked streaming, matrix-free eval, heuristic solver |
+| [src/ddqaoa/simulator.py](src/ddqaoa/simulator.py) | Analytical Matrix-Free Simulator with exact Adjoint State gradient (Feature 10) |
+| [src/ddqaoa/warm_start.py](src/ddqaoa/warm_start.py) | Classical LP / Continuous Relaxation Warm-Starting (Feature 2) |
+| [src/ddqaoa/maxcut.py](src/ddqaoa/maxcut.py) | Multi-Problem Adapter Suite: Max-Cut benchmarks (Feature 8) |
 | [experiments/run_benchmark.py](experiments/run_benchmark.py) | Paired benchmarking with ablations and statistical output |
 | [experiments/plot_results.py](experiments/plot_results.py) | Pareto curves, boxplots, trajectories, ablation charts, markdown reports |
 | [docs/RESEARCH_IMPROVEMENTS.md](docs/RESEARCH_IMPROVEMENTS.md) | Full theoretical and empirical research documentation |
@@ -110,6 +113,11 @@ from ddqaoa import (
     run_ddqaoa,
     run_enhanced_ddqaoa,
     run_fixed_qaoa,
+    generate_maxcut_instance,
+    build_maxcut_problem,
+    get_warm_start_angles,
+    evaluate_under_noise,
+    NoiseConfig,
 )
 
 inst = generate_instance(n_nodes=4, seed=0)
@@ -120,13 +128,25 @@ print("Exact classical path:", solve_classical(inst))
 baseline = run_ddqaoa(problem, p_max=6, max_steps=400, stepsize=0.03, k=30)
 print(f"Baseline: r={baseline.approx_ratio:.4f}, cumCNOT={baseline.cumulative_cnots:,}")
 
-# 2. Enhanced DDQAOA (Improvements 1-4)
-enhanced = run_enhanced_ddqaoa(problem, p_max=6, max_steps=400, stepsize=0.03, k=30)
-print(f"Enhanced: r={enhanced.approx_ratio:.4f}, cumCNOT={enhanced.cumulative_cnots:,}")
+# 2. Enhanced DDQAOA with Matrix-Free Simulator (Feature 10: 10x-100x speedup)
+enhanced = run_enhanced_ddqaoa(problem, p_max=6, max_steps=400, stepsize=0.03, k=30, device="analytical")
+print(f"Enhanced (Matrix-Free): r={enhanced.approx_ratio:.4f}, cumCNOT={enhanced.cumulative_cnots:,}")
 
-# 3. Fixed-Depth Baseline
-fixed = run_fixed_qaoa(problem, p=3, steps=400, stepsize=0.03, seed=0)
-print(f"Fixed p=3: r={fixed.approx_ratio:.4f}, cumCNOT={fixed.cumulative_cnots:,}")
+# 3. LP Continuous Relaxation Warm-Starting (Feature 2)
+theta_ws = get_warm_start_angles(inst, eps=0.05)
+warm_res = run_enhanced_ddqaoa(problem, p_max=4, max_steps=200, warm_start_angles=theta_ws, device="analytical")
+print(f"LP Warm-Started: r={warm_res.approx_ratio:.4f}")
+
+# 4. Multi-Problem Generalization: Max-Cut (Feature 8)
+mc_inst = generate_maxcut_instance(n_nodes=8, graph_type="regular", d=3, seed=42)
+_, mc_problem = build_maxcut_problem(mc_inst)
+mc_res = run_enhanced_ddqaoa(mc_problem, p_max=4, max_steps=100, device="analytical")
+print(f"Max-Cut DDQAOA: r={mc_res.approx_ratio:.4f}")
+
+# 5. Readout Error Mitigation (Feature 5: REM)
+noise = NoiseConfig(p_single=0.001, p_two=0.01, p_readout_01=0.03, p_readout_10=0.03, shots=2000)
+noisy_eval = evaluate_under_noise(enhanced.gammas, enhanced.betas, problem, noise, apply_rem=True)
+print(f"Noisy ratio: {noisy_eval.noisy_approx_ratio:.4f} -> REM Mitigated: {noisy_eval.mitigated_approx_ratio:.4f}")
 ```
 
 ---

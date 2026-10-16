@@ -30,12 +30,17 @@ from ddqaoa import (
     EnhancedConvergenceMonitor,
     FidelityModel,
     NoiseAwareStopper,
+    NoiseConfig,
     OptimizerConfig,
     ResourceBudget,
     aggregate_benchmark_results,
     build_feasible_mask,
+    build_maxcut_problem,
     build_problem,
+    evaluate_under_noise,
     generate_instance,
+    generate_maxcut_instance,
+    get_warm_start_angles,
     interp_transfer,
     reduce_instance,
     run_ddqaoa,
@@ -74,6 +79,15 @@ def main() -> None:
     ap.add_argument("--objective", choices=["energy", "postselected"], default="energy", help="training objective")
     ap.add_argument("--gradient-method", choices=["autodiff", "parameter_shift", "spsa"], default="autodiff", help="gradient estimation method")
     ap.add_argument("--shots-per-batch", type=int, default=None, help="shots per circuit execution (None for exact statevector)")
+
+    # Extended Research Suite (Features 2, 5, 8, 10)
+    ap.add_argument("--device", choices=["default.qubit", "analytical"], default="default.qubit", help="simulation engine ('analytical' is 10-100x faster matrix-free simulator)")
+    ap.add_argument("--problem", choices=["cspp", "maxcut"], default="cspp", help="optimization benchmark problem (cspp or maxcut)")
+    ap.add_argument("--graph-type", choices=["regular", "erdos_renyi", "cycle", "complete"], default="regular", help="graph structure for MaxCut")
+    ap.add_argument("--warm-start", action="store_true", help="enable LP / continuous relaxation warm-starting")
+    ap.add_argument("--rem", action="store_true", help="evaluate final states with readout error mitigation")
+    ap.add_argument("--rem-p01", type=float, default=0.03, help="bitflip 0->1 error rate for REM evaluation")
+    ap.add_argument("--rem-p10", type=float, default=0.03, help="bitflip 1->0 error rate for REM evaluation")
     args = ap.parse_args()
 
     if args.smoke:
@@ -91,10 +105,29 @@ def main() -> None:
 
     for i in range(args.n_instances):
         inst_seed = args.instance_seed + i
-        inst = generate_instance(n_nodes=args.n_nodes, seed=inst_seed)
-        _, problem = build_problem(inst, n_slack=args.n_slack)
-        path, cost = solve_classical(inst)
-        print(f"\n[instance {i:02d} (seed={inst_seed})] qubits={problem.n_qubits} optimal path={path} cost={cost}")
+        if args.problem == "maxcut":
+            inst = generate_maxcut_instance(
+                n_nodes=args.n_nodes,
+                seed=inst_seed,
+                graph_type=args.graph_type,
+            )
+            inst, problem = build_maxcut_problem(inst)
+            _, best_cost = inst.solve_classical()
+            feasible_mask = None
+            print(f"\n[instance {i:02d} (seed={inst_seed})] MaxCut ({args.graph_type}) qubits={problem.n_qubits} optimal cut={best_cost:.1f}")
+        else:
+            inst = generate_instance(n_nodes=args.n_nodes, seed=inst_seed)
+            _, problem = build_problem(inst, n_slack=args.n_slack)
+            path, cost = solve_classical(inst)
+            feasible_mask = build_feasible_mask(problem, inst)
+            print(f"\n[instance {i:02d} (seed={inst_seed})] CSPP qubits={problem.n_qubits} optimal path={path} cost={cost}")
+
+        warm_angles = None
+        if args.warm_start:
+            try:
+                warm_angles = get_warm_start_angles(inst)
+            except Exception as err:
+                print(f"   [Warm-Start Warning] Failed to compute warm start angles: {err}")
 
         # Method suite
         runs: list[tuple[str, any]] = []
@@ -108,11 +141,11 @@ def main() -> None:
                 max_steps=args.steps,
                 stepsize=args.stepsize,
                 k=args.k,
+                device=args.device,
             ),
         ))
 
         # 2. Enhanced DDQAOA
-        feasible_mask = build_feasible_mask(problem, inst)
         runs.append((
             "ddqaoa_enhanced",
             lambda: run_enhanced_ddqaoa(
@@ -130,11 +163,37 @@ def main() -> None:
                 shots=args.shots_per_batch,
                 objective=args.objective,
                 feasible_mask=feasible_mask,
+                device=args.device,
             ),
         ))
 
-        # 3. Research Features (if flags enabled or requested)
-        if args.reduce:
+        # 3. Warm-Started DDQAOA (Feature 2)
+        if args.warm_start and warm_angles is not None:
+            runs.append((
+                "ddqaoa_warm_start",
+                lambda: run_enhanced_ddqaoa(
+                    problem,
+                    p_max=args.p_max,
+                    max_steps=args.steps,
+                    stepsize=args.stepsize,
+                    k=args.k,
+                    min_steps_per_depth=max(10, args.k // 2),
+                    min_marginal_gain=5e-4,
+                    patience_layers=1,
+                    grad_clip=1.0,
+                    depth_decay=0.1,
+                    gradient_method=args.gradient_method,
+                    shots=args.shots_per_batch,
+                    objective=args.objective,
+                    feasible_mask=feasible_mask,
+                    device=args.device,
+                    warm_start_angles=warm_angles,
+                    method_name="ddqaoa_warm_start",
+                ),
+            ))
+
+        # 4. Research Features (if flags enabled or requested)
+        if args.reduce and args.problem == "cspp":
             red_res = reduce_instance(inst)
             _, problem_reduced = build_problem(
                 red_res.reduced_instance,
@@ -159,6 +218,7 @@ def main() -> None:
                     shots=args.shots_per_batch,
                     objective=args.objective,
                     feasible_mask=feasible_mask_red,
+                    device=args.device,
                     method_name="ddqaoa_reduced",
                 ),
             ))
@@ -181,6 +241,7 @@ def main() -> None:
                     shots=args.shots_per_batch,
                     objective=args.objective,
                     feasible_mask=feasible_mask,
+                    device=args.device,
                     method_name="ddqaoa_curvature",
                 ),
             ))
@@ -213,6 +274,7 @@ def main() -> None:
                     feasible_mask=feasible_mask,
                     gradient_method=args.gradient_method,
                     shots=args.shots_per_batch,
+                    device=args.device,
                     method_name="ddqaoa_postselected",
                 ),
             ))
@@ -232,6 +294,7 @@ def main() -> None:
                     transfer=AdaptiveTransfer(strategy="adaptive"),
                     resource_budget=ResourceBudget(min_marginal_gain=5e-4, patience_layers=1, min_depth=2),
                     optimizer_config=OptimizerConfig(stepsize=args.stepsize, grad_clip=1.0, depth_decay=0.1),
+                    device=args.device,
                     method_name="abl_orig_monitor",
                 ),
             ))
@@ -249,6 +312,7 @@ def main() -> None:
                     transfer=interp_transfer,
                     resource_budget=ResourceBudget(min_marginal_gain=5e-4, patience_layers=1, min_depth=2),
                     optimizer_config=OptimizerConfig(stepsize=args.stepsize, grad_clip=1.0, depth_decay=0.1),
+                    device=args.device,
                     method_name="abl_orig_transfer",
                 ),
             ))
@@ -266,6 +330,7 @@ def main() -> None:
                     transfer=AdaptiveTransfer(strategy="adaptive"),
                     resource_budget=None,
                     optimizer_config=OptimizerConfig(stepsize=args.stepsize, grad_clip=1.0, depth_decay=0.1),
+                    device=args.device,
                     method_name="abl_no_resource_budget",
                 ),
             ))
@@ -283,6 +348,7 @@ def main() -> None:
                     transfer=AdaptiveTransfer(strategy="adaptive"),
                     resource_budget=ResourceBudget(min_marginal_gain=5e-4, patience_layers=1, min_depth=2),
                     optimizer_config=None,
+                    device=args.device,
                     method_name="abl_vanilla_adam",
                 ),
             ))
@@ -297,6 +363,7 @@ def main() -> None:
                     steps=args.steps,
                     stepsize=args.stepsize,
                     seed=args.opt_seed + i,
+                    device=args.device,
                 ),
             ))
 
@@ -312,6 +379,34 @@ def main() -> None:
                     f"({elapsed:.1f}s)"
                 )
                 summary_data = res.summary()
+
+                if args.rem:
+                    try:
+                        noise_cfg = NoiseConfig(
+                            p_single=0.001,
+                            p_two=args.noise_eps2,
+                            p_readout_01=args.rem_p01,
+                            p_readout_10=args.rem_p10,
+                            shots=args.shots_per_batch or 2000,
+                            seed=args.opt_seed + i,
+                        )
+                        eval_res = evaluate_under_noise(
+                            gammas=res.gammas,
+                            betas=res.betas,
+                            problem=problem,
+                            noise=noise_cfg,
+                            apply_rem=True,
+                            warm_start_angles=warm_angles if name == "ddqaoa_warm_start" else None,
+                        )
+                        summary_data["rem"] = eval_res.summary()
+                        print(
+                            f"      [REM] P_raw={eval_res.unmitigated_success_prob:.4f} -> "
+                            f"P_mit={eval_res.mitigated_success_prob:.4f} "
+                            f"(gain={eval_res.rem_recovery_ratio:.2f}x)"
+                        )
+                    except Exception as rem_err:
+                        print(f"      [REM Warning] {rem_err}")
+
                 records.append({
                     "instance": i,
                     "instance_seed": inst_seed,

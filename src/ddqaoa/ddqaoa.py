@@ -126,6 +126,7 @@ def run_ddqaoa(
     objective: str = "energy",
     feasible_mask: np.ndarray | None = None,
     y_min: float = 1e-4,
+    warm_start_angles: np.ndarray | None = None,
 ) -> RunResult:
     """Grow the circuit from p0 to p_max, adding a layer whenever the energy converges.
 
@@ -139,6 +140,7 @@ def run_ddqaoa(
         feasible_mask=feasible_mask,
         objective=objective,
         y_min=y_min,
+        warm_start_angles=warm_start_angles,
     )
     monitor = monitor if monitor is not None else ConvergenceMonitor(eps, sigma, k)
 
@@ -255,6 +257,11 @@ def run_ddqaoa(
     if float(cost_fn(gammas, betas)) > best[0]:
         gammas, betas = best[1], best[2]
 
+    meta = {
+        "device": device,
+        "warm_started": warm_start_angles is not None,
+    }
+
     return _finish(
         method_name,
         problem,
@@ -266,6 +273,7 @@ def run_ddqaoa(
         switches,
         stopping_reason=stopping_reason,
         grad_norms=grad_norms,
+        metadata=meta,
         ledger=ledger,
         feasible_mask=feasible_mask,
     )
@@ -300,6 +308,7 @@ def run_enhanced_ddqaoa(
     objective: str = "energy",
     feasible_mask: np.ndarray | None = None,
     y_min: float = 1e-4,
+    warm_start_angles: np.ndarray | None = None,
 ) -> RunResult:
     """Enhanced DDQAOA combining all four algorithmic improvements:
 
@@ -354,6 +363,7 @@ def run_enhanced_ddqaoa(
         objective=objective,
         feasible_mask=feasible_mask,
         y_min=y_min,
+        warm_start_angles=warm_start_angles,
     )
 
 
@@ -372,6 +382,7 @@ def run_fixed_qaoa(
     objective: str = "energy",
     feasible_mask: np.ndarray | None = None,
     y_min: float = 1e-4,
+    warm_start_angles: np.ndarray | None = None,
 ) -> RunResult:
     """Standard QAOA at fixed depth p, optimised with Adam for a fixed number of steps.
 
@@ -383,6 +394,7 @@ def run_fixed_qaoa(
         feasible_mask=feasible_mask,
         objective=objective,
         y_min=y_min,
+        warm_start_angles=warm_start_angles,
     )
     if init == "ramp":
         frac = (np.arange(p) + 0.5) / p
@@ -421,6 +433,11 @@ def run_fixed_qaoa(
             grad_norms.append(g_norm)
         ledger.record_step(step=step, depth=p, energy=energy_val, grad_norm=g_norm)
 
+    meta = {
+        "device": device,
+        "warm_started": warm_start_angles is not None,
+    }
+
     return _finish(
         f"p={p}",
         problem,
@@ -431,6 +448,7 @@ def run_fixed_qaoa(
         [p] * steps,
         [],
         grad_norms=grad_norms,
+        metadata=meta,
         ledger=ledger,
         feasible_mask=feasible_mask,
     )

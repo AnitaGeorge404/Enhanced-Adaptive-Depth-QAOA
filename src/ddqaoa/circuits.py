@@ -95,19 +95,33 @@ def make_qnodes(
     feasible_mask: np.ndarray | None = None,
     objective: str = "energy",
     y_min: float = 1e-4,
+    warm_start_angles: np.ndarray | None = None,
 ):
     """Return (probs_fn, cost_fn); both take (gammas, betas) of any length p.
 
     objective: "energy" for standard expectation <H_C>, or "postselected" for
         E_ps = sum_{x in F} P(x) E(x) / sum_{x in F} P(x) with y_min fallback.
     """
+    if device == "analytical":
+        from .simulator import make_analytical_qnodes
+        return make_analytical_qnodes(
+            problem=problem,
+            feasible_mask=feasible_mask,
+            objective=objective,
+            y_min=y_min,
+            warm_start_angles=warm_start_angles,
+        )
+
     n = problem.n_qubits
     dev = qml.device(device, wires=n, **(device_kwargs or {}))
 
     @qml.qnode(dev, diff_method="backprop")
     def probs_fn(gammas, betas):
         for w in range(n):
-            qml.Hadamard(wires=w)
+            if warm_start_angles is not None:
+                qml.RY(float(warm_start_angles[w]), wires=w)
+            else:
+                qml.Hadamard(wires=w)
         for g, b in zip(gammas, betas):
             qaoa_layer(g, b, problem.ising)
         return qml.probs(wires=range(n))

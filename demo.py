@@ -22,8 +22,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ddqaoa import build_problem, cnots_per_layer, decode, generate_instance, make_qnodes
-from ddqaoa import run_ddqaoa, run_enhanced_ddqaoa, run_fixed_qaoa, solve_classical
+from ddqaoa import (
+    build_problem,
+    cnots_per_layer,
+    decode,
+    generate_instance,
+    get_warm_start_angles,
+    make_qnodes,
+    run_ddqaoa,
+    run_enhanced_ddqaoa,
+    run_fixed_qaoa,
+    solve_classical,
+)
 from ddqaoa.circuits import index_to_bits
 from ddqaoa.cspp import simple_paths
 from ddqaoa.metrics import approximation_ratio
@@ -58,6 +68,8 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=300, help="optimiser steps per method")
     ap.add_argument("--p-max", type=int, default=5, help="max layers for DDQAOA")
     ap.add_argument("--compare", type=int, nargs="*", default=[3], help="fixed depths to compare")
+    ap.add_argument("--device", choices=["default.qubit", "analytical"], default="default.qubit", help="simulation engine ('analytical' is 10-100x faster)")
+    ap.add_argument("--warm-start", action="store_true", help="use LP continuous relaxation to seed initial angles")
     ap.add_argument("--pause", action="store_true", help="wait for Enter between steps")
     args = ap.parse_args()
     lr, k = 0.05, 30
@@ -109,7 +121,20 @@ def main() -> None:
             print(f"   step {step:4d}: now using {depth} layer(s) "
                   f"({depth * n_cnot} CNOTs)   quality r = {approximation_ratio(energy, problem):.4f}")
 
-    dd = run_ddqaoa(problem, p_max=args.p_max, max_steps=args.steps, stepsize=lr, k=k, callback=progress)
+    warm_angles = get_warm_start_angles(inst) if args.warm_start else None
+    if args.warm_start:
+        print("   [Warm-Starting] Seeded initial circuit states from continuous LP relaxation angles.")
+
+    dd = run_ddqaoa(
+        problem,
+        p_max=args.p_max,
+        max_steps=args.steps,
+        stepsize=lr,
+        k=k,
+        device=args.device,
+        warm_start_angles=warm_angles,
+        callback=progress,
+    )
     print(f"   baseline DDQAOA finished after {len(dd.energies)} steps at {dd.final_depth} layers, "
           f"quality r = {dd.approx_ratio:.4f}")
 
@@ -122,6 +147,8 @@ def main() -> None:
         k=k,
         min_steps_per_depth=15,
         min_marginal_gain=5e-4,
+        device=args.device,
+        warm_start_angles=warm_angles,
     )
     print(f"   Enhanced DDQAOA finished after {len(dd_enh.energies)} steps at {dd_enh.final_depth} layers, "
           f"quality r = {dd_enh.approx_ratio:.4f} (stopped: {dd_enh.stopping_reason})")
@@ -130,13 +157,21 @@ def main() -> None:
     header(5, f"Normal QAOA - fixed number of layers {args.compare}, chosen in advance", args.pause)
     fixed = []
     for p in args.compare:
-        res = run_fixed_qaoa(problem, p, steps=args.steps, stepsize=lr, seed=args.seed)
+        res = run_fixed_qaoa(
+            problem,
+            p,
+            steps=args.steps,
+            stepsize=lr,
+            seed=args.seed,
+            device=args.device,
+            warm_start_angles=warm_angles,
+        )
         fixed.append(res)
         print(f"   p = {p:2d}: quality r = {res.approx_ratio:.4f}   ({p * n_cnot} CNOTs every step)")
 
     # ------------------------------------------------------------------ 6
     header(6, "What does the DDQAOA circuit actually measure?", args.pause)
-    probs_fn, _ = make_qnodes(problem)
+    probs_fn, _ = make_qnodes(problem, device=args.device, warm_start_angles=warm_angles)
     probs = np.asarray(probs_fn(dd_enh.gammas, dd_enh.betas))
     print(f"   {'chance':>7s}   {'bitstring':{problem.n_qubits + 3}s} route")
     for idx in np.argsort(probs)[::-1][:6]:
